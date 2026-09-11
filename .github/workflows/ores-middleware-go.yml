@@ -1,0 +1,73 @@
+name: ORES middleware native Go stress
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "53 7 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-middleware-go-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ORES_MIDDLEWARE_SHA: d588e7bf890c337500641ed06d0b90f7b7a57748
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-middleware
+          ref: ${{ env.ORES_MIDDLEWARE_SHA }}
+          path: middleware
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.0"
+          cache: false
+
+      - name: Prove immutable upstream checkout
+        run: |
+          set -euo pipefail
+          test "$(git -C middleware rev-parse HEAD)" = "$ORES_MIDDLEWARE_SHA"
+          test -z "$(git -C middleware status --porcelain)"
+
+      - name: Stress the upstream Go package under race detection
+        run: |
+          set -euo pipefail
+          cd middleware/src/golang
+          go mod download
+          for iteration in 1 2 3 4 5; do
+            echo "upstream Go iteration $iteration"
+            go test -race -shuffle=on -count=1 ./...
+          done
+
+      - name: Stress the independent Go consumer
+        run: |
+          set -euo pipefail
+          cd middleware-consumer
+          go mod tidy
+          go vet ./...
+          for iteration in 1 2 3 4 5; do
+            echo "consumer Go iteration $iteration"
+            go test -race -shuffle=on -count=1 ./...
+          done
+
+      - name: Prove tracked upstream source stayed immutable
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          test "$(git -C middleware rev-parse HEAD)" = "$ORES_MIDDLEWARE_SHA"
+          test -z "$(git -C middleware diff --name-only)"
